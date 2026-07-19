@@ -190,8 +190,16 @@ async function startCamera() {
     audio: false,
   });
   video.srcObject = stream;
-  await new Promise((res) => { video.onloadedmetadata = res; });
-  await video.play();
+  // Wait for dimensions — but don't hang if metadata already fired (race)
+  // or never fires (safety timeout).
+  if (video.readyState < 1 || !video.videoWidth) {
+    await new Promise((res) => {
+      const t = setTimeout(res, 4000);
+      video.onloadedmetadata = () => { clearTimeout(t); res(); };
+    });
+  }
+  try { await video.play(); } catch (_) { /* autoplay quirks; stream still runs */ }
+  if (!video.videoWidth) throw new Error("camera stream has no video size");
   canvas.width = video.videoWidth;
   canvas.height = video.videoHeight;
   procScale = PROC_W / canvas.width;
@@ -253,6 +261,16 @@ function showBanner(text, ms = 6000) {
   bannerTimer = setTimeout(() => banner.classList.add("hidden"), ms);
 }
 banner.addEventListener("click", () => banner.classList.add("hidden"));
+
+// Surface any crash on screen so silent freezes become readable bug reports.
+window.addEventListener("error", (e) => {
+  showBanner("Error: " + (e.message || "unknown") +
+    (e.lineno ? " (line " + e.lineno + ")" : ""), 15000);
+});
+window.addEventListener("unhandledrejection", (e) => {
+  const r = e.reason;
+  showBanner("Error: " + (r && r.message ? r.message : String(r)), 15000);
+});
 
 // ---------- Calibration storage ----------
 function saveCalibration() {
@@ -465,9 +483,14 @@ startBtn.addEventListener("click", async () => {
     loadmsg.textContent = "";
     setupMotionWarning();
     const saved = loadCalibration();
-    if (saved && confirm("Use the saved court calibration from last time?")) S.points = saved;
-    else S.points = [];
-    enterCalibration();
+    if (saved) {
+      S.points = saved;
+      enterCalibration();
+      showBanner("Loaded saved calibration — adjust the dots if needed, or tap Start over.", 5000);
+    } else {
+      S.points = [];
+      enterCalibration();
+    }
     requestAnimationFrame(loop);
   } catch (err) {
     startBtn.disabled = false;
